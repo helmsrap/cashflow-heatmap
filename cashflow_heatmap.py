@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import math
 import re
 import sys
 
@@ -20,7 +21,6 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 from matplotlib.ticker import FuncFormatter
@@ -55,7 +55,7 @@ def parse_amount(value):
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
     if value is None or pd.isna(value):
-        return np.nan
+        return float("nan")
 
     text = str(value).strip().replace("−", "-")  # unicode minus sign
     negative = False
@@ -67,7 +67,7 @@ def parse_amount(value):
     # Drop thousands separators, currency symbols/codes and spaces.
     text = re.sub(r"[,\s$€£¥]|USD|EUR|GBP", "", text, flags=re.IGNORECASE)
     if not re.fullmatch(r"[+-]?(\d+\.?\d*|\.\d+)", text):
-        return np.nan
+        return float("nan")
 
     number = float(text)
     return -number if negative else number
@@ -163,11 +163,20 @@ def compact(value):
     return f"{value:,.0f}"
 
 
+def to_grid(frame):
+    """DataFrame -> list of rows of floats, which is what pcolormesh draws."""
+    return [[float(v) for v in row] for row in frame.itertuples(index=False)]
+
+
+def abs_max(grid):
+    """Largest absolute value in a list of rows (1.0 if all are zero)."""
+    return max(abs(v) for row in grid for v in row) or 1.0
+
+
 def label_cells(ax, values, limit, fontsize):
     """Write each non-zero value in bold inside its cell."""
-    for i in range(values.shape[0]):
-        for j in range(values.shape[1]):
-            v = values[i, j]
+    for i, row in enumerate(values):
+        for j, v in enumerate(row):
             if v == 0:
                 continue
             dark_cell = abs(v) > 0.4 * limit
@@ -180,10 +189,9 @@ def cell_fontsize(ax, values):
     """Largest font (max 9pt) at which every value fits inside its cell."""
     fig = ax.figure
     bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
-    n_rows, n_cols = values.shape
-    cell_w = 72 * bbox.width / n_cols
-    cell_h = 72 * bbox.height / n_rows
-    longest = max(len(compact(v)) for v in values.flat)
+    cell_w = 72 * bbox.width / len(values[0])
+    cell_h = 72 * bbox.height / len(values)
+    longest = max(len(compact(v)) for row in values for v in row)
     # Bold digits are a little wider than regular ones.
     return min(9, 0.6 * cell_h, cell_w / (0.68 * longest + 1))
 
@@ -198,13 +206,13 @@ def plot_heatmap(table, out_path, show_labels=True, outflow=None):
     """Draw the heat map. `outflow`, if given, is a one-row DataFrame (same
     month columns as `table`) drawn as a separate row along the bottom."""
     n_accounts, n_months = table.shape
-    values = table.to_numpy(dtype=float)
-    totals = values.sum(axis=1, keepdims=True)
+    values = to_grid(table)
+    totals = [[sum(row)] for row in values]
 
-    limit = np.abs(values).max() or 1.0
+    limit = abs_max(values)
     norm = TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
     # The total column gets its own scale; on the monthly scale it would saturate.
-    total_limit = np.abs(totals).max() or 1.0
+    total_limit = abs_max(totals)
     total_norm = TwoSlopeNorm(vmin=-total_limit, vcenter=0.0, vmax=total_limit)
 
     n_rows = n_accounts + (outflow is not None)
@@ -215,7 +223,7 @@ def plot_heatmap(table, out_path, show_labels=True, outflow=None):
     y_fontsize = max(4, min(9, 0.7 * row_pts))
     x_fontsize = max(4, min(9, 0.9 * col_pts))
     # With many months, label every n-th one so the dates don't overlap.
-    x_step = max(1, int(np.ceil(x_fontsize * 1.6 / col_pts)))
+    x_step = max(1, math.ceil(x_fontsize * 1.6 / col_pts))
 
     # Total column is ~0.75in wide whatever the number of months.
     month_width = PAGE_SIZE[0] - 4.5
@@ -242,11 +250,11 @@ def plot_heatmap(table, out_path, show_labels=True, outflow=None):
     rows = [(ax, ax_total, values, totals, limit, total_limit)]
 
     if outflow is not None:
-        out_values = outflow.to_numpy(dtype=float)
-        out_totals = out_values.sum(axis=1, keepdims=True)
+        out_values = to_grid(outflow)
+        out_totals = [[sum(row)] for row in out_values]
         # The outflow row also gets its own scale. Its total uses the total
         # column's scale (clipped at the darkest shade if it is larger).
-        out_limit = np.abs(out_values).max() or 1.0
+        out_limit = abs_max(out_values)
         out_norm = TwoSlopeNorm(vmin=-out_limit, vcenter=0.0, vmax=out_limit)
         ax_out = fig.add_subplot(grid[1, 0])
         ax_out_total = fig.add_subplot(grid[1, 1])
@@ -269,13 +277,13 @@ def plot_heatmap(table, out_path, show_labels=True, outflow=None):
     for a in total_axes:
         a.set_yticks([])
 
-    ax.set_yticks(np.arange(n_accounts) + 0.5)
+    ax.set_yticks([i + 0.5 for i in range(n_accounts)])
     # Truncate very long account names so they don't squeeze the plot.
     ax.set_yticklabels([n if len(n) <= 40 else n[:39] + "…" for n in table.index],
                        fontsize=y_fontsize)
 
     # Month and "Total" labels go under the bottom-most row.
-    month_axes[-1].set_xticks(np.arange(0, n_months, x_step) + 0.5)
+    month_axes[-1].set_xticks([j + 0.5 for j in range(0, n_months, x_step)])
     month_axes[-1].set_xticklabels(
         [p.strftime("%b %Y") for p in table.columns[::x_step]],
         rotation=45, ha="right", fontsize=x_fontsize)
