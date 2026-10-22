@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a heat map of monthly net cash flows per account from an xlsx file.
+"""Build a heat map of quarterly or monthly net cash flows per account from an xlsx file.
 
 The input sheet must have a header row with the columns: Date, Amount, To, From.
 Each row moves `Amount` out of the `From` account and into the `To` account, so
@@ -9,7 +9,8 @@ If an account named "Net Outflow" appears in the To column, its net flow is
 shown with the sign reversed in a separate row along the bottom.
 
 Usage:
-    python cashflow_heatmap.py flows.xlsx [-o heatmap.png] [--sheet NAME] [--no-labels]
+    python cashflow_heatmap.py flows.xlsx [-o heatmap.png] [--period quarterly|monthly]
+                               [--sheet NAME] [--no-labels]
 """
 
 import argparse
@@ -33,6 +34,11 @@ OUTFLOW_ACCOUNT = "Net Outflow"
 ACCOUNT_ORDER = ["Estate", "Illiquid", "Semi-liquid", "Liquid", "Safe"]
 # Accounts from ACCOUNT_ORDER that are left out when they have no entries in the file.
 HIDE_IF_UNUSED = {"Estate"}
+# --period choices: pandas period code, column label format, colour bar wording.
+PERIODS = {
+    "quarterly": ("Q", "Q%q %Y", "Quarterly"),
+    "monthly": ("M", "%b %Y", "Monthly"),
+}
 
 # Diverging scale: red = net outflow, neutral gray = zero, blue = net inflow.
 DIVERGING = LinearSegmentedColormap.from_list(
@@ -102,9 +108,10 @@ def load_flows(path, sheet=0):
     return df
 
 
-def monthly_net_flows(df):
-    """Return a DataFrame indexed by account, one column per calendar month."""
-    month = df["Date"].dt.to_period("M")
+def net_flows(df, freq="Q"):
+    """Return a DataFrame indexed by account, one column per calendar quarter
+    (freq="Q") or month (freq="M")."""
+    month = df["Date"].dt.to_period(freq)
     inflows = pd.DataFrame({"Account": df["To"], "Month": month, "Net": df["Amount"]})
     outflows = pd.DataFrame({"Account": df["From"], "Month": month, "Net": -df["Amount"]})
     # A blank To/From (e.g. an external deposit or withdrawal) only affects the other side.
@@ -113,8 +120,8 @@ def monthly_net_flows(df):
 
     table = legs.pivot_table(index="Account", columns="Month", values="Net",
                              aggfunc="sum", fill_value=0.0)
-    # Include every month in the range, even ones with no activity.
-    all_months = pd.period_range(month.min(), month.max(), freq="M")
+    # Include every period in the range, even ones with no activity.
+    all_months = pd.period_range(month.min(), month.max(), freq=freq)
     table = table.reindex(columns=all_months, fill_value=0.0)
     return table.sort_index()
 
@@ -194,7 +201,7 @@ def style_axes(ax):
         spine.set_visible(False)
 
 
-def plot_heatmap(table, out_path, show_labels=True, outflow=None):
+def plot_heatmap(table, out_path, show_labels=True, outflow=None, period="quarterly"):
     """Draw the heat map. `outflow`, if given, is a one-row DataFrame (same
     month columns as `table`) drawn as a separate row along the bottom."""
     n_accounts, n_months = table.shape
@@ -274,10 +281,11 @@ def plot_heatmap(table, out_path, show_labels=True, outflow=None):
     ax.set_yticklabels([n if len(n) <= 40 else n[:39] + "…" for n in table.index],
                        fontsize=y_fontsize)
 
-    # Month and "Total" labels go under the bottom-most row.
+    _, label_format, period_name = PERIODS[period]
+    # Period and "Total" labels go under the bottom-most row.
     month_axes[-1].set_xticks(np.arange(0, n_months, x_step) + 0.5)
     month_axes[-1].set_xticklabels(
-        [p.strftime("%b %Y") for p in table.columns[::x_step]],
+        [p.strftime(label_format) for p in table.columns[::x_step]],
         rotation=45, ha="right", fontsize=x_fontsize)
     total_axes[-1].set_xticks([0.5])
     total_axes[-1].set_xticklabels(["Total"], fontsize=x_fontsize, fontweight="bold",
@@ -287,7 +295,7 @@ def plot_heatmap(table, out_path, show_labels=True, outflow=None):
     cbar.outline.set_visible(False)
     cbar.ax.tick_params(colors=MUTED_INK, labelsize=8, length=0)
     cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: compact(v)))
-    cbar.set_label("Monthly net flow  (− out  /  + in)", color=MUTED_INK, fontsize=9)
+    cbar.set_label(f"{period_name} net flow  (− out  /  + in)", color=MUTED_INK, fontsize=9)
 
     fig.suptitle("Sources and Uses", x=0.02, ha="left",
                  color=INK, fontsize=13, fontweight="bold")
@@ -314,6 +322,9 @@ def main():
     parser.add_argument("xlsx", help="input .xlsx file with Date, Amount, To, From columns")
     parser.add_argument("-o", "--output", default="net_flows_heatmap.png",
                         help="output PNG path (default: net_flows_heatmap.png)")
+    parser.add_argument("--period", choices=PERIODS, default="quarterly",
+                        help="sum the flows per calendar quarter or month "
+                             "(default: quarterly)")
     parser.add_argument("--sheet", default=0,
                         help="sheet name or index to read (default: first sheet)")
     parser.add_argument("--no-labels", action="store_true",
@@ -325,11 +336,13 @@ def main():
     if df.empty:
         sys.exit("No valid rows found.")
 
-    table = monthly_net_flows(df)
+    table = net_flows(df, freq=PERIODS[args.period][0])
     table, outflow = split_outflow(table, df)
     table = order_accounts(table)
-    plot_heatmap(table, args.output, show_labels=not args.no_labels, outflow=outflow)
-    print(f"Saved heat map for {table.shape[0]} accounts x {table.shape[1]} months "
+    plot_heatmap(table, args.output, show_labels=not args.no_labels, outflow=outflow,
+                 period=args.period)
+    unit = "quarters" if args.period == "quarterly" else "months"
+    print(f"Saved heat map for {table.shape[0]} accounts x {table.shape[1]} {unit} "
           f"to {args.output}")
 
 
