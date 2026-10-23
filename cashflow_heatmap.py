@@ -4,6 +4,7 @@
 The input sheet must have a header row with the columns: Date, Amount, To, From.
 Each row moves `Amount` out of the `From` account and into the `To` account, so
 for every row the `To` account gets +Amount and the `From` account gets -Amount.
+Other columns, such as "To Holding" and "From Holding", may be present and are ignored.
 
 If an account named "Net Outflow" appears in the To column, its net flow is
 shown with the sign reversed in a separate row along the bottom.
@@ -87,6 +88,8 @@ def load_flows(path, sheet=0):
         sys.exit(f"Missing required column(s): {', '.join(missing)}. "
                  f"Found: {', '.join(df.columns)}")
 
+    # Keep only the columns we use; any others (e.g. "To Holding", "From Holding")
+    # are ignored.
     df = df[REQUIRED_COLUMNS].copy()
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     raw_amounts = df["Amount"].copy()

@@ -16,6 +16,9 @@ An `.xlsx` file whose first sheet has a header row with these columns:
 | `To` | Account receiving the money (+Amount). |
 | `From` | Account sending the money (−Amount). |
 
+Other columns, such as `To Holding` and `From Holding`, may be included and are ignored.
+Columns can be in any order.
+
 Rows with an unreadable date or amount are skipped, and the script lists them.
 
 ## Usage
