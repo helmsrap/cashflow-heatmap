@@ -48,3 +48,38 @@ Options:
   legend applies to the quarterly (or monthly) cells of the main grid.
 
 `example/` contains a made-up input file and the heat map it produces.
+
+## Cumulative net flow by holding
+
+`holding_heatmap.py` builds a second heat map: the running total of net flow into each
+holding, by calendar quarter (or month). It uses the same colors, page size and bold cell
+labels as `cashflow_heatmap.py`.
+
+![Example holding heat map](example/sample_holding_heatmap.png)
+
+The input sheet needs these columns, in any order. Any other columns, such as `To` and
+`From`, are ignored.
+
+| Column | Meaning |
+|---|---|
+| `Date` | Date of the flow. Dates may repeat. |
+| `Amount` | Amount moved, in the same formats as above. |
+| `To Holding` | Holding receiving the money (+Amount). |
+| `From Holding` | Holding sending the money (−Amount). |
+
+```bash
+python holding_heatmap.py flows.xlsx -o holding_heatmap.png
+python holding_heatmap.py flows.xlsx --period monthly -o holding_heatmap_monthly.png
+```
+
+`--sheet` and `--no-labels` work as above.
+
+- Each cell is the holding's net flow (in minus out) added up from the first period in the
+  file through the end of that period. Periods with no activity carry the total forward.
+- A blank `To Holding` or `From Holding` (e.g. an external deposit or withdrawal) only
+  affects the other side.
+- Holdings are listed alphabetically.
+- If the numbers don't fit in the cells (e.g. many months), they're rounded to whole
+  thousands or millions (`-366K`) instead of one decimal place.
+
+`example/sample_holding_flows.xlsx` is a made-up input file for this script.

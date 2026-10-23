@@ -165,15 +165,15 @@ def order_accounts(table):
     return table.reindex(shown + unexpected, fill_value=0.0)
 
 
-def compact(value):
+def compact(value, decimals=1):
     a = abs(value)
     for size, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
         if a >= size:
-            return f"{value / size:,.1f}{suffix}"
+            return f"{value / size:,.{decimals}f}{suffix}"
     return f"{value:,.0f}"
 
 
-def label_cells(ax, values, limit, fontsize):
+def label_cells(ax, values, limit, fontsize, fmt=compact):
     """Write each non-zero value in bold inside its cell."""
     for i in range(values.shape[0]):
         for j in range(values.shape[1]):
@@ -181,19 +181,19 @@ def label_cells(ax, values, limit, fontsize):
             if v == 0:
                 continue
             dark_cell = abs(v) > 0.4 * limit
-            ax.text(j + 0.5, i + 0.5, compact(v), ha="center", va="center",
+            ax.text(j + 0.5, i + 0.5, fmt(v), ha="center", va="center",
                     fontsize=fontsize, fontweight="bold",
                     color="white" if dark_cell else INK)
 
 
-def cell_fontsize(ax, values):
+def cell_fontsize(ax, values, fmt=compact):
     """Largest font (max 9pt) at which every value fits inside its cell."""
     fig = ax.figure
     bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
     n_rows, n_cols = values.shape
     cell_w = 72 * bbox.width / n_cols
     cell_h = 72 * bbox.height / n_rows
-    longest = max(len(compact(v)) for v in values.flat)
+    longest = max(len(fmt(v)) for v in values.flat)
     # Bold digits are a little wider than regular ones.
     return min(9, 0.6 * cell_h, cell_w / (0.68 * longest + 1))
 
