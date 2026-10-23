@@ -8,8 +8,11 @@ From Holding. Each row moves `Amount` out of the `From Holding` and into the
 so each cell shows the running total for that holding up to the end of the period.
 Any other columns, such as "To" and "From", are ignored.
 
+By default only the most recent calendar quarter in the file is used, so the running
+totals start at zero at the beginning of that quarter. Use --all-data to use every row.
+
 Usage:
-    python holding_heatmap.py flows.xlsx [-o holding_heatmap.png]
+    python holding_heatmap.py flows.xlsx [-o holding_heatmap.png] [--all-data]
                               [--period quarterly|monthly] [--sheet NAME] [--no-labels]
 """
 
@@ -113,6 +116,16 @@ def cumulative_net_flows(df, freq="Q"):
     return table.cumsum(axis=1).sort_index(key=lambda names: names.str.casefold())
 
 
+def latest_quarter(df):
+    """Keep only the rows in the most recent calendar quarter that has any data.
+
+    Returns (filtered rows, that quarter as a pandas Period).
+    """
+    quarter = df["Date"].dt.to_period("Q")
+    latest = quarter.max()
+    return df[quarter == latest], latest
+
+
 def plot_heatmap(table, out_path, show_labels=True, period="quarterly"):
     n_holdings, n_periods = table.shape
     values = table.to_numpy(dtype=float)
@@ -160,7 +173,12 @@ def plot_heatmap(table, out_path, show_labels=True, period="quarterly"):
     cbar.set_label(f"Cumulative net flow, {period_name.lower()}  (− out  /  + in)",
                    color=MUTED_INK, fontsize=9)
 
-    fig.suptitle("Cumulative Net Flow by Holding", x=0.02, ha="left",
+    _, quarter_format, _ = PERIODS["quarterly"]
+    first, last = table.columns[0].asfreq("Q"), table.columns[-1].asfreq("Q")
+    span = first.strftime(quarter_format)
+    if last != first:
+        span += f" – {last.strftime(quarter_format)}"
+    fig.suptitle(f"Cumulative Net Flow by Holding, {span}", x=0.02, ha="left",
                  color=INK, fontsize=13, fontweight="bold")
 
     fig.draw_without_rendering()  # run the layout so cell sizes are final
@@ -188,6 +206,9 @@ def main():
     parser.add_argument("--period", choices=PERIODS, default="quarterly",
                         help="show the running total per calendar quarter or month "
                              "(default: quarterly)")
+    parser.add_argument("--all-data", action="store_true",
+                        help="use every row in the file (default: only the most recent "
+                             "quarter in the file)")
     parser.add_argument("--sheet", default=0,
                         help="sheet name or index to read (default: first sheet)")
     parser.add_argument("--no-labels", action="store_true",
@@ -198,6 +219,10 @@ def main():
     df = load_flows(args.xlsx, sheet)
     if df.empty:
         sys.exit("No valid rows found.")
+    if not args.all_data:
+        df, quarter = latest_quarter(df)
+        print(f"Using only {quarter.strftime(PERIODS['quarterly'][1])} "
+              f"({len(df)} rows); pass --all-data to use every row.")
 
     table = cumulative_net_flows(df, freq=PERIODS[args.period][0])
     if table.empty:

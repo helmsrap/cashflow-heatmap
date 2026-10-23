@@ -53,9 +53,10 @@ Options:
 
 `holding_heatmap.py` builds a second heat map: the running total of net flow into each
 holding, by calendar quarter (or month). It uses the same colors, page size and bold cell
-labels as `cashflow_heatmap.py`.
+labels as `cashflow_heatmap.py`. By default it uses only the most recent quarter in the file;
+`--all-data` uses every row.
 
-![Example holding heat map](example/sample_holding_heatmap.png)
+![Example holding heat map, made with --all-data](example/sample_holding_heatmap.png)
 
 The input sheet needs these columns, in any order. Any other columns, such as `To` and
 `From`, are ignored.
@@ -68,14 +69,19 @@ The input sheet needs these columns, in any order. Any other columns, such as `T
 | `From Holding` | Holding sending the money (−Amount). |
 
 ```bash
-python holding_heatmap.py flows.xlsx -o holding_heatmap.png
-python holding_heatmap.py flows.xlsx --period monthly -o holding_heatmap_monthly.png
+python holding_heatmap.py flows.xlsx -o holding_heatmap.png                    # latest quarter
+python holding_heatmap.py flows.xlsx --period monthly -o latest_by_month.png  # its 3 months
+python holding_heatmap.py flows.xlsx --all-data -o all_quarters.png           # every quarter
 ```
 
 `--sheet` and `--no-labels` work as above.
 
-- Each cell is the holding's net flow (in minus out) added up from the first period in the
-  file through the end of that period. Periods with no activity carry the total forward.
+- **Latest quarter (default):** only rows dated in the most recent calendar quarter that
+  appears in the file are used, so the running totals start at zero at the beginning of
+  that quarter. The quarter is shown in the title and printed when the script runs.
+- **`--all-data`:** every row is used, and the title shows the range of quarters.
+- Each cell is the holding's net flow (in minus out) added up from the first period shown
+  through the end of that period. Periods with no activity carry the total forward.
 - A blank `To Holding` or `From Holding` (e.g. an external deposit or withdrawal) only
   affects the other side.
 - Holdings are listed alphabetically.
