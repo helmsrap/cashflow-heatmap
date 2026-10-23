@@ -79,7 +79,15 @@ python holding_heatmap.py flows.xlsx --period monthly -o latest_by_month.png  # 
 python holding_heatmap.py flows.xlsx --all-data -o all_quarters.png           # every quarter
 ```
 
-`--sheet` and `--no-labels` work as above.
+`--sheet` and `--no-labels` work as above. Two more options help with many holdings:
+
+- `--top N` shows the N holdings with the most money moving in and out (default 20) and
+  combines the rest into one **Other holdings** row (and column). The footer says how many
+  were combined. `--top 0` shows every holding; with more than about 30 the names and
+  numbers get too small to read, but the colors still show the pattern.
+- `--table PATH.xlsx` also writes the full numbers for every holding, with nothing
+  combined, to an Excel file: the amount moved and number of transfers for each pair,
+  and the cumulative net flow.
 
 - **Latest quarter (default):** only rows dated in the most recent calendar quarter that
   appears in the file are used. The quarter is shown in the title and printed when the
@@ -91,8 +99,10 @@ python holding_heatmap.py flows.xlsx --all-data -o all_quarters.png           # 
     withdrawals are visible. A negative amount counts as a transfer the other way.
   - The **Net flow** column (three columns, one per month, with `--period monthly`) is
     each holding's in minus out since the start of the quarter.
-  - With many holdings, the numbers are left out of the matrix cells when they no longer
-    fit, and the colors carry the pattern.
+  - Transfers between two holdings that were both combined into Other holdings aren't
+    shown in the matrix (they don't change Other holdings' net flow).
+  - When the numbers don't fit with the transfer counts, the counts are dropped; then the
+    numbers are rounded (`870K`); then they're left out and the colors carry the pattern.
 - **`--all-data`:** every row is used. Each cell is the holding's net flow (in minus out)
   added up from the first period in the file through the end of that period, and the
   title shows the range of quarters. Periods with no activity carry the total forward.

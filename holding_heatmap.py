@@ -13,9 +13,14 @@ drawn as a From x To matrix of the amounts moved between holdings, with each hol
 net flow beside it (the running totals start at zero at the beginning of the quarter).
 Use --all-data to use every row and show the running totals over time instead.
 
+With many holdings, only the --top N (default 20) with the most money moving in and out
+are shown; the rest are combined as "Other holdings". --table writes the full numbers
+for every holding to an xlsx file.
+
 Usage:
     python holding_heatmap.py flows.xlsx [-o holding_heatmap.png] [--all-data]
-                              [--period quarterly|monthly] [--sheet NAME] [--no-labels]
+                              [--period quarterly|monthly] [--top N] [--table PATH.xlsx]
+                              [--sheet NAME] [--no-labels]
 """
 
 import argparse
@@ -38,6 +43,40 @@ EXTERNAL = "External"
 # apart from the red/blue of the net-flow scale, which means out/in.
 SEQUENTIAL = LinearSegmentedColormap.from_list("moved", ["#dff3ea", "#1baf7a", "#0a5c40"])
 EMPTY_CELL = "#f0efec"  # a holding pair with no transfers
+# Holdings beyond --top are combined under this name.
+OTHER = "Other holdings"
+DEFAULT_TOP = 20
+
+
+def holding_order(names):
+    """Sort holding names alphabetically, with OTHER and then EXTERNAL last."""
+    names = set(names)
+    order = sorted(names - {OTHER, EXTERNAL}, key=str.casefold)
+    return order + [n for n in (OTHER, EXTERNAL) if n in names]
+
+
+def gap_width(cell_pts):
+    """Width (points) of the surface-coloured gap between cells: 2pt, thinner for
+    small cells so the gaps never hide the colours."""
+    return min(2.0, 0.08 * cell_pts)
+
+
+def fold_holdings(df, top):
+    """Keep the `top` holdings with the most money moving in and out; rename the rest
+    to OTHER. Returns (rows, number of holdings combined). top=0 keeps them all."""
+    legs = pd.concat([df["To Holding"], df["From Holding"]], ignore_index=True)
+    amounts = pd.concat([df["Amount"].abs()] * 2, ignore_index=True)
+    named = legs.notna() & (legs != "").fillna(False)
+    activity = amounts[named].groupby(legs[named]).sum()
+    if top <= 0 or len(activity) <= top:
+        return df, 0
+    keep = set(activity.nlargest(top).index)
+    df = df.copy()
+    for col in ("To Holding", "From Holding"):
+        side = df[col]
+        fold = (side.notna() & (side != "").fillna(False) & ~side.isin(keep)).astype(bool)
+        df[col] = side.mask(fold, OTHER)
+    return df, len(activity) - top
 
 
 def compact_whole(value):
@@ -121,7 +160,8 @@ def cumulative_net_flows(df, freq="Q"):
     # Include every period in the range, so quiet periods carry the running total forward.
     all_periods = pd.period_range(period.min(), period.max(), freq=freq)
     table = table.reindex(columns=all_periods, fill_value=0.0)
-    return table.cumsum(axis=1).sort_index(key=lambda names: names.str.casefold())
+    table = table.cumsum(axis=1)
+    return table.reindex(holding_order(table.index))
 
 
 def latest_quarter(df):
@@ -139,7 +179,8 @@ def flow_matrix(df):
     with the total moved and the number of transfers (NaN where there were none).
 
     A blank holding becomes EXTERNAL. A negative amount is counted as a transfer the
-    other way. Both axes list the same holdings, alphabetically, with EXTERNAL last.
+    other way. Both axes list the same holdings, alphabetically, with
+    OTHER and EXTERNAL last.
     """
     sides = {c: df[c].fillna("").replace("", EXTERNAL) for c in ("From Holding", "To Holding")}
     reverse = df["Amount"] < 0
@@ -152,9 +193,7 @@ def flow_matrix(df):
 
     grouped = pairs.groupby(["From", "To"])["Amount"]
     amounts, counts = grouped.sum().unstack(), grouped.size().unstack()
-    names = set(amounts.index) | set(amounts.columns)
-    order = sorted(names - {EXTERNAL}, key=str.casefold)
-    order += [EXTERNAL] if EXTERNAL in names else []
+    order = holding_order(set(amounts.index) | set(amounts.columns))
     return (amounts.reindex(index=order, columns=order),
             counts.reindex(index=order, columns=order))
 
@@ -164,14 +203,19 @@ def label_matrix(ax, amounts, counts, norm):
     fig = ax.figure
     bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
     cell_h = 72 * bbox.height / amounts.shape[0]
-    fontsize = cell_fontsize(ax, amounts, compact)
+    fmt = compact
+    fontsize = cell_fontsize(ax, amounts, fmt)
     # Two lines (amount, then a smaller count) need ~2.2 font heights.
     two_lines = min(fontsize, 0.9 * cell_h / 2.2)
     show_counts = two_lines >= 5
     if show_counts:
         fontsize = two_lines
     elif fontsize < 4.5:
-        return
+        # Amounts only; if they still don't fit, try whole numbers (870K, not 870.4K).
+        fmt = compact_whole
+        fontsize = cell_fontsize(ax, amounts, fmt)
+        if fontsize < 4.5:
+            return
     # Offset of each line from the cell centre, in rows (1 row = 1 data unit).
     offset = 0.55 * fontsize / cell_h if show_counts else 0
 
@@ -181,7 +225,7 @@ def label_matrix(ax, amounts, counts, norm):
             if not np.isfinite(v):
                 continue
             color = "white" if norm(v) > 0.5 else INK
-            ax.text(j + 0.5, i + 0.5 - offset, compact(v), ha="center", va="center",
+            ax.text(j + 0.5, i + 0.5 - offset, fmt(v), ha="center", va="center",
                     fontsize=fontsize, fontweight="bold", color=color)
             if show_counts:
                 n = int(counts[i, j])
@@ -190,11 +234,12 @@ def label_matrix(ax, amounts, counts, norm):
                         color=color, alpha=0.85)
 
 
-def plot_flow_matrix(amounts, counts, net, out_path, quarter, show_labels=True,
+def plot_flow_matrix(amounts, counts, net, out_path, quarter, note, show_labels=True,
                      period="quarterly"):
     """Draw the From x To matrix for one quarter with the net-flow columns beside it.
 
     `net` has the same rows as `amounts` (NaN for EXTERNAL) and one column per period.
+    `note` starts the footer line.
     """
     names = list(amounts.index)
     n, n_periods = len(names), net.shape[1]
@@ -209,6 +254,7 @@ def plot_flow_matrix(amounts, counts, net, out_path, quarter, show_labels=True,
     # Rough cell size (points) used to size the holding names before layout.
     row_pts = 72 * (PAGE_SIZE[1] - 3.6) / n
     name_fontsize = max(4, min(9, 0.7 * row_pts))
+    gap = gap_width(row_pts)
 
     # Widths in inches: the net columns get enough room for their labels and colour bar.
     net_width = max(1.3, 0.9 * n_periods)
@@ -226,11 +272,11 @@ def plot_flow_matrix(amounts, counts, net, out_path, quarter, show_labels=True,
     # then the pairs that had transfers on top.
     background = np.where(np.eye(n, dtype=bool), np.nan, 0.0)
     ax.pcolormesh(np.ma.masked_invalid(background), cmap=ListedColormap([EMPTY_CELL]),
-                  edgecolors=SURFACE, linewidth=2)
+                  edgecolors=SURFACE, linewidth=gap)
     mesh = ax.pcolormesh(np.ma.masked_invalid(values), cmap=SEQUENTIAL, norm=moved_norm,
-                         edgecolors=SURFACE, linewidth=2)
+                         edgecolors=SURFACE, linewidth=gap)
     net_mesh = ax_net.pcolormesh(np.ma.masked_invalid(net_values), cmap=DIVERGING,
-                                 norm=net_norm, edgecolors=SURFACE, linewidth=2)
+                                 norm=net_norm, edgecolors=SURFACE, linewidth=gap)
 
     for a in (ax, ax_net):
         a.set_facecolor(SURFACE)
@@ -265,11 +311,9 @@ def plot_flow_matrix(amounts, counts, net, out_path, quarter, show_labels=True,
         cbar.ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: compact(v)))
         cbar.set_label(label, color=MUTED_INK, fontsize=8)
 
-    n_transfers = int(np.nansum(count_values))
     fig.suptitle(f"Flows Between Holdings, {quarter.strftime(PERIODS['quarterly'][1])}",
                  x=0.02, ha="left", color=INK, fontsize=13, fontweight="bold")
-    note = (f"{n_transfers:,} transfers, {compact(np.nansum(values))} moved in total. "
-            "Read across a row for where a holding's money went, "
+    note += ("\nRead across a row for where a holding's money went, "
             "down a column for where it came from.")
     if EXTERNAL in names:
         note += f" {EXTERNAL} = a blank To or From Holding."
@@ -289,7 +333,7 @@ def plot_flow_matrix(amounts, counts, net, out_path, quarter, show_labels=True,
     plt.close(fig)
 
 
-def plot_heatmap(table, out_path, show_labels=True, period="quarterly"):
+def plot_heatmap(table, out_path, show_labels=True, period="quarterly", note=None):
     n_holdings, n_periods = table.shape
     values = table.to_numpy(dtype=float)
 
@@ -301,6 +345,7 @@ def plot_heatmap(table, out_path, show_labels=True, period="quarterly"):
     row_pts = 72 * (PAGE_SIZE[1] - 2.0) / n_holdings
     col_pts = 72 * (PAGE_SIZE[0] - 3.5) / n_periods
     y_fontsize = max(4, min(9, 0.7 * row_pts))
+    gap = gap_width(min(row_pts, col_pts))
     x_fontsize = max(4, min(9, 0.9 * col_pts))
     # With many months, label every n-th one so the dates don't overlap.
     x_step = max(1, int(np.ceil(x_fontsize * 1.6 / col_pts)))
@@ -314,7 +359,7 @@ def plot_heatmap(table, out_path, show_labels=True, period="quarterly"):
 
     # edgecolor = surface gives a thin gap between cells.
     mesh = ax.pcolormesh(values, cmap=DIVERGING, norm=norm,
-                         edgecolors=SURFACE, linewidth=2)
+                         edgecolors=SURFACE, linewidth=gap)
     ax.set_facecolor(SURFACE)
     ax.invert_yaxis()
     style_axes(ax)
@@ -343,6 +388,8 @@ def plot_heatmap(table, out_path, show_labels=True, period="quarterly"):
         span += f" – {last.strftime(quarter_format)}"
     fig.suptitle(f"Cumulative Net Flow by Holding, {span}", x=0.02, ha="left",
                  color=INK, fontsize=13, fontweight="bold")
+    if note:
+        fig.supxlabel(note, x=0.02, ha="left", color=MUTED_INK, fontsize=8)
 
     fig.draw_without_rendering()  # run the layout so cell sizes are final
 
@@ -359,6 +406,20 @@ def plot_heatmap(table, out_path, show_labels=True, period="quarterly"):
     plt.close(fig)
 
 
+def write_table(df, path, freq, matrix=True):
+    """Write the full numbers for every holding (nothing combined) to an xlsx file."""
+    label_format = PERIODS["quarterly" if freq == "Q" else "monthly"][1]
+    net = cumulative_net_flows(df, freq=freq)
+    net.columns = [p.strftime(label_format) for p in net.columns]
+    with pd.ExcelWriter(path) as writer:
+        if matrix:
+            amounts, counts = flow_matrix(df)
+            amounts.rename_axis(index="From / To").to_excel(writer, sheet_name="Amount moved")
+            counts.rename_axis(index="From / To").to_excel(writer, sheet_name="Transfers")
+        net.rename_axis(index="Holding").to_excel(writer, sheet_name="Cumulative net flow")
+    print(f"Saved full table to {path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -372,6 +433,13 @@ def main():
     parser.add_argument("--all-data", action="store_true",
                         help="use every row and show running totals over time (default: "
                              "only the most recent quarter, as a From x To matrix)")
+    parser.add_argument("--top", type=int, default=DEFAULT_TOP, metavar="N",
+                        help="show the N holdings with the most money moving in and out "
+                             f"and combine the rest as \"{OTHER}\" (default: {DEFAULT_TOP}; "
+                             "0 shows every holding)")
+    parser.add_argument("--table", metavar="PATH.xlsx",
+                        help="also write the full numbers for every holding to this xlsx "
+                             "file (nothing combined)")
     parser.add_argument("--sheet", default=0,
                         help="sheet name or index to read (default: first sheet)")
     parser.add_argument("--no-labels", action="store_true",
@@ -386,19 +454,36 @@ def main():
         df, quarter = latest_quarter(df)
         print(f"Using only {quarter.strftime(PERIODS['quarterly'][1])} "
               f"({len(df)} rows); pass --all-data to use every row.")
-        amounts, counts = flow_matrix(df)
+
+    freq = PERIODS[args.period][0]
+    if args.table:
+        write_table(df, args.table, freq, matrix=not args.all_data)
+    shown, n_combined = fold_holdings(df, args.top)
+    combined_note = ""
+    if n_combined:
+        combined_note = (f"Showing the {args.top} holdings with the most money moved; the "
+                         f"other {n_combined} are combined as {OTHER}.")
+        print(f"{n_combined} holdings combined as \"{OTHER}\"; use --top to change how "
+              f"many are shown, or --table for every holding.")
+
+    if not args.all_data:
+        amounts, counts = flow_matrix(shown)
         if amounts.empty:
             sys.exit("No To Holding or From Holding values found.")
-        net = cumulative_net_flows(df, freq=PERIODS[args.period][0]).reindex(amounts.index)
-        plot_flow_matrix(amounts, counts, net, args.output, quarter,
+        net = cumulative_net_flows(shown, freq=freq).reindex(amounts.index)
+        note = f"{len(df):,} transfers, {compact(df['Amount'].abs().sum())} moved in total."
+        if n_combined:
+            note += f" {combined_note} Transfers between two of those aren't shown."
+        plot_flow_matrix(amounts, counts, net, args.output, quarter, note,
                          show_labels=not args.no_labels, period=args.period)
         print(f"Saved flow matrix for {len(amounts)} holdings to {args.output}")
         return
 
-    table = cumulative_net_flows(df, freq=PERIODS[args.period][0])
+    table = cumulative_net_flows(shown, freq=freq)
     if table.empty:
         sys.exit("No To Holding or From Holding values found.")
-    plot_heatmap(table, args.output, show_labels=not args.no_labels, period=args.period)
+    plot_heatmap(table, args.output, show_labels=not args.no_labels, period=args.period,
+                 note=combined_note)
     unit = "quarters" if args.period == "quarterly" else "months"
     print(f"Saved heat map for {table.shape[0]} holdings x {table.shape[1]} {unit} "
           f"to {args.output}")
