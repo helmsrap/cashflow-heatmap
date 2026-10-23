@@ -22,11 +22,45 @@ import pandas as pd
 from matplotlib.colors import TwoSlopeNorm
 from matplotlib.ticker import FuncFormatter
 
-# Shared parsing, colours, page size and cell labelling (also sets the Agg backend).
+# Shared parsing, colours and page size (also sets the Agg backend).
 from cashflow_heatmap import (DIVERGING, DPI, INK, MUTED_INK, PAGE_SIZE, PERIODS, SURFACE,
-                              cell_fontsize, compact, label_cells, parse_amount, style_axes)
+                              compact, parse_amount, style_axes)
 
 REQUIRED_COLUMNS = ["Date", "Amount", "To Holding", "From Holding"]
+
+
+def compact_whole(value):
+    """Like compact() but with no decimals: -366K instead of -365.7K."""
+    a = abs(value)
+    for size, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if a >= size:
+            return f"{value / size:,.0f}{suffix}"
+    return f"{value:,.0f}"
+
+
+def label_cells(ax, values, limit, fontsize, fmt):
+    """Write each non-zero value in bold inside its cell."""
+    for i in range(values.shape[0]):
+        for j in range(values.shape[1]):
+            v = values[i, j]
+            if v == 0:
+                continue
+            dark_cell = abs(v) > 0.4 * limit
+            ax.text(j + 0.5, i + 0.5, fmt(v), ha="center", va="center",
+                    fontsize=fontsize, fontweight="bold",
+                    color="white" if dark_cell else INK)
+
+
+def cell_fontsize(ax, values, fmt):
+    """Largest font (max 9pt) at which every value, written with fmt, fits inside its cell."""
+    fig = ax.figure
+    bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+    n_rows, n_cols = values.shape
+    cell_w = 72 * bbox.width / n_cols
+    cell_h = 72 * bbox.height / n_rows
+    longest = max(len(fmt(v)) for v in values.flat)
+    # Bold digits are a little wider than regular ones.
+    return min(9, 0.6 * cell_h, cell_w / (0.68 * longest + 1))
 
 
 def load_flows(path, sheet=0):
@@ -134,7 +168,7 @@ def plot_heatmap(table, out_path, show_labels=True, period="quarterly"):
     # Cell values, sized to the actual cell size; skipped when cells are too small.
     # If the one-decimal labels don't fit (e.g. many months), try whole numbers.
     if show_labels:
-        for fmt in (compact, lambda v: compact(v, decimals=0)):
+        for fmt in (compact, compact_whole):
             fontsize = cell_fontsize(ax, values, fmt)
             if fontsize >= 4.5:
                 label_cells(ax, values, limit, fontsize, fmt)
