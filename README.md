@@ -51,10 +51,15 @@ Options:
 
 ## Cumulative net flow by holding
 
-`holding_heatmap.py` builds a second heat map: the running total of net flow into each
-holding, by calendar quarter (or month). It uses the same colors, page size and bold cell
-labels as `cashflow_heatmap.py`. By default it uses only the most recent quarter in the file;
-`--all-data` uses every row.
+`holding_heatmap.py` shows how money moved between holdings. It uses the same colors, page
+size and bold cell labels as `cashflow_heatmap.py`, and has two views:
+
+- **Latest quarter (default):** a From × To matrix of everything moved between holdings in
+  the most recent quarter in the file, with each holding's net flow beside it.
+- **`--all-data`:** the running total of net flow into each holding, by quarter (or month),
+  across the whole file.
+
+![Example flow matrix for the latest quarter](example/sample_holding_matrix.png)
 
 ![Example holding heat map, made with --all-data](example/sample_holding_heatmap.png)
 
@@ -70,20 +75,28 @@ The input sheet needs these columns, in any order. Any other columns, such as `T
 
 ```bash
 python holding_heatmap.py flows.xlsx -o holding_heatmap.png                    # latest quarter
-python holding_heatmap.py flows.xlsx --period monthly -o latest_by_month.png  # its 3 months
+python holding_heatmap.py flows.xlsx --period monthly -o latest_by_month.png  # net by month
 python holding_heatmap.py flows.xlsx --all-data -o all_quarters.png           # every quarter
 ```
 
 `--sheet` and `--no-labels` work as above.
 
 - **Latest quarter (default):** only rows dated in the most recent calendar quarter that
-  appears in the file are used, so the running totals start at zero at the beginning of
-  that quarter. The quarter is shown in the title and printed when the script runs.
-- **`--all-data`:** every row is used, and the title shows the range of quarters.
-- Each cell is the holding's net flow (in minus out) added up from the first period shown
-  through the end of that period. Periods with no activity carry the total forward.
-- A blank `To Holding` or `From Holding` (e.g. an external deposit or withdrawal) only
-  affects the other side.
+  appears in the file are used. The quarter is shown in the title and printed when the
+  script runs.
+  - Each matrix cell is the total moved from the row's holding to the column's holding
+    that quarter, with the number of transfers underneath. Many transfers between the
+    same two holdings add up into one cell. Empty gray cells had no transfers.
+  - A blank `To Holding` or `From Holding` appears as **External**, so deposits and
+    withdrawals are visible. A negative amount counts as a transfer the other way.
+  - The **Net flow** column (three columns, one per month, with `--period monthly`) is
+    each holding's in minus out since the start of the quarter.
+  - With many holdings, the numbers are left out of the matrix cells when they no longer
+    fit, and the colors carry the pattern.
+- **`--all-data`:** every row is used. Each cell is the holding's net flow (in minus out)
+  added up from the first period in the file through the end of that period, and the
+  title shows the range of quarters. Periods with no activity carry the total forward.
+  A blank `To Holding` or `From Holding` only affects the other side.
 - Holdings are listed alphabetically.
 - If the numbers don't fit in the cells (e.g. many months), they're rounded to whole
   thousands or millions (`-366K`) instead of one decimal place.
