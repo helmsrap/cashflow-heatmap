@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
-"""Build a heat map of the cumulative net flow into each holding, quarterly or monthly,
-from an xlsx file.
+"""Build a heat map of the money moved between holdings from an xlsx file.
 
 The input sheet must have a header row with the columns: Date, Amount, To Holding,
 From Holding. Each row moves `Amount` out of the `From Holding` and into the
-`To Holding`. The net flow per period (in minus out) is added up period by period,
-so each cell shows the running total for that holding up to the end of the period.
-Any other columns, such as "To" and "From", are ignored.
+`To Holding`. Any other columns, such as "To" and "From", are ignored.
 
-By default only the most recent calendar quarter in the file is used. That quarter is
-drawn as a From x To matrix of the amounts moved between holdings, with each holding's
-net flow beside it (the running totals start at zero at the beginning of the quarter).
-Use --all-data to use every row and show the running totals over time instead.
+The heat map is a From x To matrix: each cell is the total moved from one holding to
+another, with the number of transfers. Beside it, each holding's net flow (in minus out).
+By default only the most recent calendar quarter in the file is summed; --all-data sums
+every row.
 
 With many holdings, only the --top N (default 20) with the most money moving in and out
 are shown; the rest are combined as "Other holdings". --table writes the full numbers
@@ -19,8 +16,7 @@ for every holding to an xlsx file.
 
 Usage:
     python holding_heatmap.py flows.xlsx [-o holding_heatmap.png] [--all-data]
-                              [--period quarterly|monthly] [--top N] [--table PATH.xlsx]
-                              [--sheet NAME] [--no-labels]
+                              [--top N] [--table PATH.xlsx] [--sheet NAME] [--no-labels]
 """
 
 import argparse
@@ -37,6 +33,7 @@ from cashflow_heatmap import (DIVERGING, DPI, INK, MUTED_INK, PAGE_SIZE, PERIODS
                               compact, parse_amount, style_axes)
 
 REQUIRED_COLUMNS = ["Date", "Amount", "To Holding", "From Holding"]
+QUARTER_FORMAT = PERIODS["quarterly"][1]  # e.g. "Q3 2026"
 # Name used in the flow matrix for a blank To/From Holding (deposits and withdrawals).
 EXTERNAL = "External"
 # Amounts moved between holdings: one hue, light = little, dark = a lot. Green keeps it
@@ -143,27 +140,6 @@ def load_flows(path, sheet=0):
     return df
 
 
-def cumulative_net_flows(df, freq="Q"):
-    """Return a DataFrame indexed by holding, one column per calendar quarter
-    (freq="Q") or month (freq="M"), holding the running total of net flow."""
-    period = df["Date"].dt.to_period(freq)
-    inflows = pd.DataFrame({"Holding": df["To Holding"], "Period": period,
-                            "Net": df["Amount"]})
-    outflows = pd.DataFrame({"Holding": df["From Holding"], "Period": period,
-                             "Net": -df["Amount"]})
-    # A blank holding (e.g. an external deposit or withdrawal) only affects the other side.
-    legs = pd.concat([inflows, outflows]).dropna(subset=["Holding"])
-    legs = legs[legs["Holding"] != ""]
-
-    table = legs.pivot_table(index="Holding", columns="Period", values="Net",
-                             aggfunc="sum", fill_value=0.0)
-    # Include every period in the range, so quiet periods carry the running total forward.
-    all_periods = pd.period_range(period.min(), period.max(), freq=freq)
-    table = table.reindex(columns=all_periods, fill_value=0.0)
-    table = table.cumsum(axis=1)
-    return table.reindex(holding_order(table.index))
-
-
 def latest_quarter(df):
     """Keep only the rows in the most recent calendar quarter that has any data.
 
@@ -172,6 +148,13 @@ def latest_quarter(df):
     quarter = df["Date"].dt.to_period("Q")
     latest = quarter.max()
     return df[quarter == latest], latest
+
+
+def quarter_span(df):
+    """The calendar quarters the rows cover, e.g. "Q3 2026" or "Q1 2025 – Q4 2026"."""
+    quarters = df["Date"].dt.to_period("Q")
+    first, last = quarters.min().strftime(QUARTER_FORMAT), quarters.max().strftime(QUARTER_FORMAT)
+    return first if first == last else f"{first} – {last}"
 
 
 def flow_matrix(df):
@@ -196,6 +179,13 @@ def flow_matrix(df):
     order = holding_order(set(amounts.index) | set(amounts.columns))
     return (amounts.reindex(index=order, columns=order),
             counts.reindex(index=order, columns=order))
+
+
+def net_flow(amounts):
+    """Each holding's net flow (money in minus money out) from the flow matrix.
+    NaN for EXTERNAL, which isn't a holding."""
+    net = amounts.sum(axis=0) - amounts.sum(axis=1)  # column = in, row = out
+    return net.mask(net.index == EXTERNAL)
 
 
 def label_matrix(ax, amounts, counts, norm):
@@ -234,30 +224,29 @@ def label_matrix(ax, amounts, counts, norm):
                         color=color, alpha=0.85)
 
 
-def plot_flow_matrix(amounts, counts, net, out_path, quarter, note, show_labels=True,
-                     period="quarterly"):
-    """Draw the From x To matrix for one quarter with the net-flow columns beside it.
+def plot_flow_matrix(amounts, counts, out_path, span, note, show_labels=True):
+    """Draw the From x To matrix with each holding's net flow in a column beside it.
 
-    `net` has the same rows as `amounts` (NaN for EXTERNAL) and one column per period.
-    `note` starts the footer line.
+    `span` names the quarters summed (for the title); `note` starts the footer line.
     """
     names = list(amounts.index)
-    n, n_periods = len(names), net.shape[1]
+    n = len(names)
     values = amounts.to_numpy(dtype=float)
     count_values = counts.to_numpy(dtype=float)
-    net_values = net.to_numpy(dtype=float)
+    net_values = net_flow(amounts).to_numpy(dtype=float).reshape(-1, 1)
 
     moved_norm = Normalize(vmin=0.0, vmax=np.nanmax(values))
-    net_limit = np.nanmax(np.abs(net_values)) if np.isfinite(net_values).any() else 1.0
-    net_norm = TwoSlopeNorm(vmin=-(net_limit or 1.0), vcenter=0.0, vmax=net_limit or 1.0)
+    net_limit = np.nanmax(np.abs(net_values)) if np.isfinite(net_values).any() else 0.0
+    net_limit = net_limit or 1.0
+    net_norm = TwoSlopeNorm(vmin=-net_limit, vcenter=0.0, vmax=net_limit)
 
     # Rough cell size (points) used to size the holding names before layout.
     row_pts = 72 * (PAGE_SIZE[1] - 3.6) / n
     name_fontsize = max(4, min(9, 0.7 * row_pts))
     gap = gap_width(row_pts)
 
-    # Widths in inches: the net columns get enough room for their labels and colour bar.
-    net_width = max(1.3, 0.9 * n_periods)
+    # Widths in inches: the net column gets enough room for its labels and colour bar.
+    net_width = 1.3
     matrix_width = PAGE_SIZE[0] - 2.4 - net_width
     fig = plt.figure(figsize=PAGE_SIZE, facecolor=SURFACE, layout="constrained")
     fig.get_layout_engine().set(w_pad=0.3, h_pad=0.3, wspace=0.03, hspace=0.02)
@@ -294,27 +283,23 @@ def plot_flow_matrix(amounts, counts, net, out_path, quarter, note, show_labels=
     ax.set_ylabel("From", color=MUTED_INK, fontsize=10, fontweight="bold")
     ax.set_xlabel("To", color=MUTED_INK, fontsize=10, fontweight="bold")
 
-    _, label_format, _ = PERIODS[period]
     ax_net.tick_params(labelleft=False)
-    ax_net.set_xticks(np.arange(n_periods) + 0.5)
-    ax_net.set_xticklabels([p.strftime(label_format) for p in net.columns],
-                           rotation=45, ha="left", fontsize=name_fontsize)
+    ax_net.set_xticks([])
     ax_net.set_xlabel("Net flow", color=MUTED_INK, fontsize=10, fontweight="bold")
 
     for bar_ax, bar_mesh, label, ticks in (
-            (cax, mesh, f"Amount moved in {quarter.strftime(PERIODS['quarterly'][1])}", None),
-            (cax_net, net_mesh, "Cumulative net  (− out / + in)",
-             [net_norm.vmin, 0.0, net_norm.vmax])):
+            (cax, mesh, f"Amount moved, {span}", None),
+            (cax_net, net_mesh, "Net flow  (− out / + in)", [-net_limit, 0.0, net_limit])):
         cbar = fig.colorbar(bar_mesh, cax=bar_ax, orientation="horizontal", ticks=ticks)
         cbar.outline.set_visible(False)
         cbar.ax.tick_params(colors=MUTED_INK, labelsize=7, length=0)
         cbar.ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: compact(v)))
         cbar.set_label(label, color=MUTED_INK, fontsize=8)
 
-    fig.suptitle(f"Flows Between Holdings, {quarter.strftime(PERIODS['quarterly'][1])}",
+    fig.suptitle(f"Flows Between Holdings, {span}",
                  x=0.02, ha="left", color=INK, fontsize=13, fontweight="bold")
     note += ("\nRead across a row for where a holding's money went, "
-            "down a column for where it came from.")
+             "down a column for where it came from.")
     if EXTERNAL in names:
         note += f" {EXTERNAL} = a blank To or From Holding."
     fig.supxlabel(note, x=0.02, ha="left", color=MUTED_INK, fontsize=8)
@@ -333,90 +318,14 @@ def plot_flow_matrix(amounts, counts, net, out_path, quarter, note, show_labels=
     plt.close(fig)
 
 
-def plot_heatmap(table, out_path, show_labels=True, period="quarterly", note=None):
-    n_holdings, n_periods = table.shape
-    values = table.to_numpy(dtype=float)
-
-    limit = np.abs(values).max() or 1.0
-    norm = TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit)
-
-    # Rough plot area (page minus margins, labels and colour bar) used to size
-    # tick labels before layout; points per row / column.
-    row_pts = 72 * (PAGE_SIZE[1] - 2.0) / n_holdings
-    col_pts = 72 * (PAGE_SIZE[0] - 3.5) / n_periods
-    y_fontsize = max(4, min(9, 0.7 * row_pts))
-    gap = gap_width(min(row_pts, col_pts))
-    x_fontsize = max(4, min(9, 0.9 * col_pts))
-    # With many months, label every n-th one so the dates don't overlap.
-    x_step = max(1, int(np.ceil(x_fontsize * 1.6 / col_pts)))
-
-    fig = plt.figure(figsize=PAGE_SIZE, facecolor=SURFACE, layout="constrained")
-    # ~0.3in margin all round for printing.
-    fig.get_layout_engine().set(w_pad=0.3, h_pad=0.3, wspace=0.01)
-    grid = fig.add_gridspec(1, 2, width_ratios=[PAGE_SIZE[0] - 3.5, 0.18])
-    ax = fig.add_subplot(grid[0, 0])
-    cax = fig.add_subplot(grid[0, 1])
-
-    # edgecolor = surface gives a thin gap between cells.
-    mesh = ax.pcolormesh(values, cmap=DIVERGING, norm=norm,
-                         edgecolors=SURFACE, linewidth=gap)
-    ax.set_facecolor(SURFACE)
-    ax.invert_yaxis()
-    style_axes(ax)
-
-    ax.set_yticks(np.arange(n_holdings) + 0.5)
-    # Truncate very long holding names so they don't squeeze the plot.
-    ax.set_yticklabels([n if len(n) <= 40 else n[:39] + "…" for n in table.index],
-                       fontsize=y_fontsize)
-
-    _, label_format, period_name = PERIODS[period]
-    ax.set_xticks(np.arange(0, n_periods, x_step) + 0.5)
-    ax.set_xticklabels([p.strftime(label_format) for p in table.columns[::x_step]],
-                       rotation=45, ha="right", fontsize=x_fontsize)
-
-    cbar = fig.colorbar(mesh, cax=cax)
-    cbar.outline.set_visible(False)
-    cbar.ax.tick_params(colors=MUTED_INK, labelsize=8, length=0)
-    cbar.ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: compact(v)))
-    cbar.set_label(f"Cumulative net flow, {period_name.lower()}  (− out  /  + in)",
-                   color=MUTED_INK, fontsize=9)
-
-    _, quarter_format, _ = PERIODS["quarterly"]
-    first, last = table.columns[0].asfreq("Q"), table.columns[-1].asfreq("Q")
-    span = first.strftime(quarter_format)
-    if last != first:
-        span += f" – {last.strftime(quarter_format)}"
-    fig.suptitle(f"Cumulative Net Flow by Holding, {span}", x=0.02, ha="left",
-                 color=INK, fontsize=13, fontweight="bold")
-    if note:
-        fig.supxlabel(note, x=0.02, ha="left", color=MUTED_INK, fontsize=8)
-
-    fig.draw_without_rendering()  # run the layout so cell sizes are final
-
-    # Cell values, sized to the actual cell size; skipped when cells are too small.
-    # If the one-decimal labels don't fit (e.g. many months), try whole numbers.
-    if show_labels:
-        for fmt in (compact, compact_whole):
-            fontsize = cell_fontsize(ax, values, fmt)
-            if fontsize >= 4.5:
-                label_cells(ax, values, limit, fontsize, fmt)
-                break
-
-    fig.savefig(out_path, dpi=DPI, facecolor=SURFACE)
-    plt.close(fig)
-
-
-def write_table(df, path, freq, matrix=True):
+def write_table(df, path):
     """Write the full numbers for every holding (nothing combined) to an xlsx file."""
-    label_format = PERIODS["quarterly" if freq == "Q" else "monthly"][1]
-    net = cumulative_net_flows(df, freq=freq)
-    net.columns = [p.strftime(label_format) for p in net.columns]
+    amounts, counts = flow_matrix(df)
     with pd.ExcelWriter(path) as writer:
-        if matrix:
-            amounts, counts = flow_matrix(df)
-            amounts.rename_axis(index="From / To").to_excel(writer, sheet_name="Amount moved")
-            counts.rename_axis(index="From / To").to_excel(writer, sheet_name="Transfers")
-        net.rename_axis(index="Holding").to_excel(writer, sheet_name="Cumulative net flow")
+        amounts.rename_axis(index="From / To").to_excel(writer, sheet_name="Amount moved")
+        counts.rename_axis(index="From / To").to_excel(writer, sheet_name="Transfers")
+        (net_flow(amounts).drop(EXTERNAL, errors="ignore").rename("Net flow")
+         .rename_axis("Holding").to_excel(writer, sheet_name="Net flow"))
     print(f"Saved full table to {path}")
 
 
@@ -427,12 +336,9 @@ def main():
                                      "From Holding columns")
     parser.add_argument("-o", "--output", default="holding_heatmap.png",
                         help="output PNG path (default: holding_heatmap.png)")
-    parser.add_argument("--period", choices=PERIODS, default="quarterly",
-                        help="show the running total per calendar quarter or month "
-                             "(default: quarterly)")
     parser.add_argument("--all-data", action="store_true",
-                        help="use every row and show running totals over time (default: "
-                             "only the most recent quarter, as a From x To matrix)")
+                        help="sum every row in the file (default: only the most recent "
+                             "quarter in the file)")
     parser.add_argument("--top", type=int, default=DEFAULT_TOP, metavar="N",
                         help="show the N holdings with the most money moving in and out "
                              f"and combine the rest as \"{OTHER}\" (default: {DEFAULT_TOP}; "
@@ -450,43 +356,31 @@ def main():
     df = load_flows(args.xlsx, sheet)
     if df.empty:
         sys.exit("No valid rows found.")
-    if not args.all_data:
+    if args.all_data:
+        print(f"Summing all {len(df):,} rows ({quarter_span(df)}).")
+    else:
         df, quarter = latest_quarter(df)
-        print(f"Using only {quarter.strftime(PERIODS['quarterly'][1])} "
-              f"({len(df)} rows); pass --all-data to use every row.")
+        print(f"Summing only {quarter.strftime(QUARTER_FORMAT)} ({len(df):,} rows); "
+              f"pass --all-data to sum every row.")
 
-    freq = PERIODS[args.period][0]
     if args.table:
-        write_table(df, args.table, freq, matrix=not args.all_data)
+        write_table(df, args.table)
     shown, n_combined = fold_holdings(df, args.top)
-    combined_note = ""
     if n_combined:
-        combined_note = (f"Showing the {args.top} holdings with the most money moved; the "
-                         f"other {n_combined} are combined as {OTHER}.")
         print(f"{n_combined} holdings combined as \"{OTHER}\"; use --top to change how "
               f"many are shown, or --table for every holding.")
 
-    if not args.all_data:
-        amounts, counts = flow_matrix(shown)
-        if amounts.empty:
-            sys.exit("No To Holding or From Holding values found.")
-        net = cumulative_net_flows(shown, freq=freq).reindex(amounts.index)
-        note = f"{len(df):,} transfers, {compact(df['Amount'].abs().sum())} moved in total."
-        if n_combined:
-            note += f" {combined_note} Transfers between two of those aren't shown."
-        plot_flow_matrix(amounts, counts, net, args.output, quarter, note,
-                         show_labels=not args.no_labels, period=args.period)
-        print(f"Saved flow matrix for {len(amounts)} holdings to {args.output}")
-        return
-
-    table = cumulative_net_flows(shown, freq=freq)
-    if table.empty:
+    amounts, counts = flow_matrix(shown)
+    if amounts.empty:
         sys.exit("No To Holding or From Holding values found.")
-    plot_heatmap(table, args.output, show_labels=not args.no_labels, period=args.period,
-                 note=combined_note)
-    unit = "quarters" if args.period == "quarterly" else "months"
-    print(f"Saved heat map for {table.shape[0]} holdings x {table.shape[1]} {unit} "
-          f"to {args.output}")
+    note = f"{len(df):,} transfers, {compact(df['Amount'].abs().sum())} moved in total."
+    if n_combined:
+        note += (f" Showing the {args.top} holdings with the most money moved; the other "
+                 f"{n_combined} are combined as {OTHER}. Transfers between two of those "
+                 f"aren't shown.")
+    plot_flow_matrix(amounts, counts, args.output, quarter_span(df), note,
+                     show_labels=not args.no_labels)
+    print(f"Saved heat map for {len(amounts)} holdings to {args.output}")
 
 
 if __name__ == "__main__":
