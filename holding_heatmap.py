@@ -20,20 +20,32 @@ Usage:
 """
 
 import argparse
+import re
 import sys
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import LinearSegmentedColormap, ListedColormap, Normalize, TwoSlopeNorm
 from matplotlib.ticker import FuncFormatter
 
-# Shared parsing, colours and page size (also sets the Agg backend).
-from cashflow_heatmap import (DIVERGING, DPI, INK, MUTED_INK, PAGE_SIZE, PERIODS, SURFACE,
-                              compact, parse_amount, style_axes)
-
 REQUIRED_COLUMNS = ["Date", "Amount", "To Holding", "From Holding"]
-QUARTER_FORMAT = PERIODS["quarterly"][1]  # e.g. "Q3 2026"
+QUARTER_FORMAT = "Q%q %Y"  # e.g. "Q3 2026"
+
+# Diverging scale for net flow: red = net outflow, neutral gray = zero, blue = net inflow.
+DIVERGING = LinearSegmentedColormap.from_list(
+    "net_flow",
+    ["#a8282a", "#e34948", "#f0efec", "#2a78d6", "#14498a"],
+)
+SURFACE = "#fcfcfb"
+INK = "#2b2b29"
+MUTED_INK = "#6b6b66"
+
+PAGE_SIZE = (11, 8.5)  # inches: US Letter, landscape
+DPI = 300  # print quality
 # Name used in the flow matrix for a blank To/From Holding (deposits and withdrawals).
 EXTERNAL = "External"
 # Amounts moved between holdings: one hue, light = little, dark = a lot. Green keeps it
@@ -76,6 +88,41 @@ def fold_holdings(df, top):
     return df, len(activity) - top
 
 
+def parse_amount(value):
+    """Convert an amount such as "1,234.56", "$ 1,234", "(500.00)" or "-1,000" to a float.
+
+    Returns NaN if the value can't be read as a number.
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if value is None or pd.isna(value):
+        return np.nan
+
+    text = str(value).strip().replace("−", "-")  # unicode minus sign
+    negative = False
+    if text.startswith("(") and text.endswith(")"):  # accounting-style negative
+        negative, text = True, text[1:-1].strip()
+    if text.endswith("-"):  # trailing minus, e.g. "1,000-"
+        negative, text = True, text[:-1].strip()
+
+    # Drop thousands separators, currency symbols/codes and spaces.
+    text = re.sub(r"[,\s$€£¥]|USD|EUR|GBP", "", text, flags=re.IGNORECASE)
+    if not re.fullmatch(r"[+-]?(\d+\.?\d*|\.\d+)", text):
+        return np.nan
+
+    number = float(text)
+    return -number if negative else number
+
+
+def compact(value):
+    """Short label: 1.2M, -365.7K, 950."""
+    a = abs(value)
+    for size, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if a >= size:
+            return f"{value / size:,.1f}{suffix}"
+    return f"{value:,.0f}"
+
+
 def compact_whole(value):
     """Like compact() but with no decimals: -366K instead of -365.7K."""
     a = abs(value)
@@ -96,6 +143,12 @@ def label_cells(ax, values, limit, fontsize, fmt):
             ax.text(j + 0.5, i + 0.5, fmt(v), ha="center", va="center",
                     fontsize=fontsize, fontweight="bold",
                     color="white" if dark_cell else INK)
+
+
+def style_axes(ax):
+    ax.tick_params(colors=INK, length=0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
 
 
 def cell_fontsize(ax, values, fmt):

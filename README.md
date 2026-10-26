@@ -52,7 +52,8 @@ Options:
 ## Flows between holdings
 
 `holding_heatmap.py` builds a heat map of how money moved between holdings. It uses the
-same colors, page size and bold cell labels as `cashflow_heatmap.py`.
+same colors, page size and bold cell labels as `cashflow_heatmap.py`. The two scripts are
+independent: each one runs on its own, without the other file.
 
 ![Example heat map for the latest quarter](example/sample_holding_heatmap.png)
 
