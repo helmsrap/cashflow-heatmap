@@ -5,6 +5,7 @@ Data Coverage page of an MSCI Private Capital Benchmarks Summary PDF into an xls
 The table is found by its header row (Asset class, Funds, FoFs, Total, Cap (USD M)) on the
 left half of the page. Each number is matched to the column whose header it lines up
 under, and the hierarchy (asset class > sub-class) comes from each label's indent.
+Sub-classes are named with their asset class, e.g. "Equity | Buyout".
 A "-" in the PDF is written as an empty cell.
 
 The script checks that Funds + FoFs = Total on every row and that each group's
@@ -192,7 +193,7 @@ def write_xlsx(records, path, source):
             cell.number_format = "#,##0"
             cell.font = font
 
-    for column, width in zip("ABCDEFG", (30, 20, 7, 10, 10, 10, 14)):
+    for column, width in zip("ABCDEFG", (42, 20, 7, 10, 10, 10, 14)):
         ws.column_dimensions[column].width = width
     ws.freeze_panes = ws.cell(header_row + 1, 1)
     ws.auto_filter.ref = f"A{header_row}:G{header_row + len(records)}"

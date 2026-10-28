@@ -116,8 +116,8 @@ python msci_data_coverage.py report.pdf --page 7 -o data_coverage.xlsx    # if t
 ```
 
 - The sheet has one row per line of the table, with the columns Asset class, Parent,
-  Level, Funds, FoFs, Total and Cap (USD M). Parent and Level tell apart rows with the same
-  name, such as the several "Generalist" and "Unknown" rows.
+  Level, Funds, FoFs, Total and Cap (USD M). Sub-classes (level 2) are named with their
+  asset class, e.g. `Equity | Buyout` or `Credit | Generalist`, so every name is unique.
 - A `-` in the PDF becomes an empty cell. Values are copied exactly as printed.
 - The table is found by its header row (Asset class / Funds / FoFs / Total / Cap), not by
   fixed positions, so small layout changes between reports shouldn't break it. If the
