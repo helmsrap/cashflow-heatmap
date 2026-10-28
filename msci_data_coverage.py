@@ -122,6 +122,11 @@ def extract_table(pdf_path, page_number):
             stack.pop()
         r["parent"] = stack[-1]["label"] if stack else ""
         stack.append(r)
+
+    # Sub-classes (level 2) are named with their asset class: "Equity | Buyout".
+    for r in records:
+        if r["level"] == 2:
+            r["label"] = f"{r['parent']} | {r['label']}"
     return records
 
 
