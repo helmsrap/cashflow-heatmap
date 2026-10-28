@@ -103,3 +103,28 @@ What the chart shows:
   numbers are rounded (`870K`); then they're left out and the colors carry the pattern.
 
 `example/sample_holding_flows.xlsx` is a made-up input file for this script.
+
+## MSCI Data Coverage table
+
+`msci_data_coverage.py` extracts the "Closed-end fund count and capitalization by asset class"
+table from the Data Coverage page of an MSCI Private Capital Benchmarks Summary PDF and
+writes it to an Excel file. It's independent of the heat map scripts.
+
+```bash
+python msci_data_coverage.py report.pdf -o data_coverage.xlsx             # page 6 (default)
+python msci_data_coverage.py report.pdf --page 7 -o data_coverage.xlsx    # if the page moves
+```
+
+- The sheet has one row per line of the table, with the columns Asset class, Parent,
+  Level, Funds, FoFs, Total and Cap (USD M). Parent and Level tell apart rows with the same
+  name, such as the several "Generalist" and "Unknown" rows.
+- A `-` in the PDF becomes an empty cell. Values are copied exactly as printed.
+- The table is found by its header row (Asset class / Funds / FoFs / Total / Cap), not by
+  fixed positions, so small layout changes between reports shouldn't break it. If the
+  header isn't on the page, the script says so.
+- The script checks that Funds + FoFs = Total on every row and that each group's rows add
+  up to the group (allowing for rounding in Cap), and prints a note for any that don't. In
+  the Q2 2026 report, for example, Credit's 48 FoFs aren't broken down by sub-class.
+
+The extracted data comes from MSCI's report, so don't commit the output file to this
+public repository.
